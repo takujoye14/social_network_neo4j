@@ -3,68 +3,63 @@ from flask import Flask, render_template, request, jsonify, redirect, url_for, s
 import sqlite3
 from dataclasses import dataclass
 from typing import List, Optional
+from neo4j import GraphDatabase
+
 
 # ======================
 # Database Access Layer
 # ======================
+
 class Database:
-    def __init__(self, db_name='social_network.db'):
-        self.db_name = db_name
+    def __init__(self):
+        uri = "bolt://localhost:7687"
+        username = "sn"
+        password = "password123"
+
+        self.driver = GraphDatabase.driver(uri, auth=(username, password))
         self._init_db()
-    
+
+    def close(self):
+        self.driver.close()
+
     def _init_db(self):
-        with self._get_connection() as conn:
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS users (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT UNIQUE NOT NULL,
-                    name TEXT NOT NULL
-                )
-            ''')
-            
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS posts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    content TEXT NOT NULL,
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY(user_id) REFERENCES users(id)
-                )
-            ''')
-            
-            conn.execute('''
-                CREATE TABLE IF NOT EXISTS followers (
-                    follower_id INTEGER NOT NULL,
-                    followee_id INTEGER NOT NULL,
-                    PRIMARY KEY(follower_id, followee_id),
-                    FOREIGN KEY(follower_id) REFERENCES users(id),
-                    FOREIGN KEY(followee_id) REFERENCES users(id)
-                )
-            ''')
-    
-    def _get_connection(self):
-        return sqlite3.connect(self.db_name)
-    
+        with self.driver.session() as session:
+            session.run("""
+                CREATE CONSTRAINT unique_user_id IF NOT EXISTS
+                FOR (u:User) REQUIRE u.id IS UNIQUE
+            """)
+            session.run("""
+                CREATE CONSTRAINT unique_username IF NOT EXISTS
+                FOR (u:User) REQUIRE u.username IS UNIQUE
+            """)
+
     # User operations
-    def create_user(self, username: str, name: str) -> int:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('INSERT INTO users (username, name) VALUES (?, ?)', (username, name))
-            return cursor.lastrowid
-    
-    def get_user(self, user_id: int) -> Optional[dict]:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT id, username, name FROM users WHERE id = ?', (user_id,))
-            row = cursor.fetchone()
-            return {'id': row[0], 'username': row[1], 'name': row[2]} if row else None
-    
-    def get_all_users(self) -> List[dict]:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('SELECT id, username, name FROM users')
-            return [{'id': row[0], 'username': row[1], 'name': row[2]} for row in cursor.fetchall()]
-    
+    def create_user(self, username: str, name: str) -> str:
+        with self.driver.session() as session:
+            result = session.run("""
+                CREATE (u:User {id: randomUUID(), username: $username, name: $name})
+                RETURN u.id AS id
+            """, username=username, name=name)
+            return result.single()["id"]
+
+    def get_user(self, user_id: str) -> Optional[dict]:
+        with self.driver.session() as session:
+            result = session.run("""
+                MATCH (u:User {id: $user_id})
+                RETURN u.id AS id, u.username AS username, u.name AS name
+            """, user_id=user_id)
+            record = result.single()
+            return record.data() if record else None
+
+    def get_all_users(self):
+        with self.driver.session() as session:
+            result = session.run("""
+                MATCH (u:User)
+                RETURN u.id AS id, u.username AS username, u.name AS name
+            """)
+            return [record.data() for record in result]
+
+
     # Post operations
     def create_post(self, user_id: int, content: str) -> int:
         with self._get_connection() as conn:
@@ -169,24 +164,24 @@ with app.app_context():
 def api_get_users():
     return jsonify(db.get_all_users())
 
-@app.route('/api/users/<int:user_id>', methods=['GET'])
+@app.route('/api/users/<user_id>', methods=['GET'])
 def api_get_user(user_id):
     user = db.get_user(user_id)
     return jsonify(user) if user else ('User not found', 404)
 
-@app.route('/api/users/<int:user_id>/posts', methods=['GET'])
+@app.route('/api/users/<user_id>/posts', methods=['GET'])
 def api_get_user_posts(user_id):
     return jsonify(db.get_posts_by_user(user_id))
 
-@app.route('/api/users/<int:user_id>/feed', methods=['GET'])
+@app.route('/api/users/<user_id>/feed', methods=['GET'])
 def api_get_user_feed(user_id):
     return jsonify(db.get_feed(user_id))
 
-@app.route('/api/users/<int:user_id>/followers', methods=['GET'])
+@app.route('/api/users/<user_id>/followers', methods=['GET'])
 def api_get_user_followers(user_id):
     return jsonify(db.get_followers(user_id))
 
-@app.route('/api/users/<int:user_id>/following', methods=['GET'])
+@app.route('/api/users/<user_id>/following', methods=['GET'])
 def api_get_user_following(user_id):
     return jsonify(db.get_following(user_id))
 
@@ -213,7 +208,7 @@ def home():
         current_user = db.get_user(session['user_id'])
     return render_template('index.html', users=users, current_user=current_user)
 
-@app.route('/user/<int:user_id>')
+@app.route('/user/<user_id>')
 def user_profile(user_id):
     user = db.get_user(user_id)
     if not user:
@@ -241,7 +236,7 @@ def user_profile(user_id):
                          current_user=current_user,
                          is_following=is_following)
 
-@app.route('/user/<int:user_id>/feed')
+@app.route('/user/<user_id>/feed')
 def user_feed(user_id):
     user = db.get_user(user_id)
     feed = db.get_feed(user_id)
@@ -254,7 +249,7 @@ def create_post():
     db.create_post(user_id, content)
     return redirect(url_for('user_profile', user_id=user_id))
 
-@app.route('/login/<int:user_id>')
+@app.route('/login/<user_id>')
 def login(user_id):
     session['user_id'] = user_id
     return redirect(url_for('home'))
