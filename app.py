@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import List, Optional
 from neo4j import GraphDatabase
 
-
+#accidentally did the whole databse connection and configuration in one go, so i am adding this text to be able to have the other commit
 # ======================
 # Database Access Layer
 # ======================
