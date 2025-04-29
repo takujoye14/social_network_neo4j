@@ -86,25 +86,19 @@ class Database:
             return [record.data() for record in result]
 
     
-    def get_feed(self, user_id: int) -> List[dict]:
-        with self._get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT p.id, p.content, p.timestamp, u.username, u.name 
-                FROM posts p 
-                JOIN users u ON p.user_id = u.id
-                JOIN followers f ON p.user_id = f.followee_id
-                WHERE f.follower_id = ?
-                ORDER BY p.timestamp DESC
-            ''', (user_id,))
-            return [{
-                'id': row[0],
-                'content': row[1],
-                'timestamp': row[2],
-                'username': row[3],
-                'name': row[4]
-            } for row in cursor.fetchall()]
-    
+    def get_feed(self, user_id: str) -> List[dict]:
+        with self.driver.session() as session:
+            result = session.run("""
+                MATCH (me:User {id: $user_id})-[:FOLLOWS]->(author:User)-[:POSTED]->(post:Post)
+                RETURN post.id AS id,
+                    post.content AS content,
+                    post.timestamp AS timestamp,
+                    author.username AS username,
+                    author.name AS name
+                ORDER BY post.timestamp DESC
+            """, user_id=user_id)
+            return [record.data() for record in result]
+
     # Follow operations
     def follow_user(self, follower_id: str, followee_id: str) -> bool:
         with self.driver.session() as session:
