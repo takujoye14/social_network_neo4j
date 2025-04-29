@@ -33,7 +33,7 @@ class Database:
                 FOR (u:User) REQUIRE u.username IS UNIQUE
             """)
 
-    # User operations
+    # working user operations done for Neo4j--- i basically did multiple tasks at the same time and forgot to commit them and push them to github
     def create_user(self, username: str, name: str) -> str:
         with self.driver.session() as session:
             result = session.run("""
